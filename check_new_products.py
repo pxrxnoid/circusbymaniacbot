@@ -161,6 +161,7 @@ def collection_label(slug):
 
 def main():
     seen = load_seen()
+    first_run = len(seen) == 0
     new_products = []
 
     for collection in COLLECTIONS:
@@ -176,7 +177,10 @@ def main():
         except Exception as e:
             print(f"  Error: {e}")
 
-    if new_products:
+    if first_run:
+        print(f"First run — indexed {len(new_products)} existing products silently.")
+        send_telegram_message(f"✅ Bot started! Monitoring 4 collections.\n📦 Indexed {len(new_products)} existing products.\n\nYou'll get notified when something new drops.")
+    elif new_products:
         print(f"\n{len(new_products)} new products found!")
         for p in new_products:
             label = collection_label(p["collection"])
