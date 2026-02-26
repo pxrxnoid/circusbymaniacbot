@@ -21,17 +21,27 @@ COLLECTIONS = [
     "lgb-limited-man",
 ]
 
-CHECK_INTERVAL = 600  # 10 minutes
+CHECK_INTERVAL = 300  # 5 minutes
 
 # In-memory state
 seen_products = set()
 bot_offset = 0
+collection_counts = {}  # slug -> product count
 
 
 def fetch_url(url):
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=20) as resp:
         return resp.read().decode()
+
+
+def fetch_collection_count(collection):
+    """Scrape the product count number from the collection page."""
+    html = fetch_url(f"{BASE_URL}/collections/{collection}")
+    match = re.search(r'(\d+)\s+products', html)
+    if match:
+        return int(match.group(1))
+    return None
 
 
 def fetch_products_json(collection, page=1):
@@ -264,7 +274,37 @@ def send_product(p, chat_id=None):
         send_telegram_message(caption, chat_id)
 
 
-# ─── Product checker (runs every 10 min) ───
+# ─── Product checker (runs every 5 min) ───
+
+def check_collection_counts():
+    """Check product counts on each collection page. Notify if count increased."""
+    global collection_counts
+    first_run = len(collection_counts) == 0
+
+    for collection in COLLECTIONS:
+        try:
+            count = fetch_collection_count(collection)
+            if count is None:
+                continue
+            label = collection_label(collection)
+            prev = collection_counts.get(collection)
+            collection_counts[collection] = count
+
+            if first_run:
+                print(f"  {label}: {count} items (initial)")
+            elif prev is not None and count > prev:
+                diff = count - prev
+                send_telegram_message(f"📢 <b>{label} +{diff}</b>\n{prev} → {count} items")
+                print(f"  {label}: +{diff} ({prev} → {count})")
+            elif prev is not None and count < prev:
+                diff = prev - count
+                print(f"  {label}: -{diff} ({prev} → {count})")
+            else:
+                print(f"  {label}: {count} (no change)")
+        except Exception as e:
+            print(f"  Count check error for {collection}: {e}")
+        time.sleep(0.3)
+
 
 def check_new_products():
     global seen_products
@@ -289,7 +329,7 @@ def check_new_products():
             f"✅ Bot started! Monitoring 4 collections.\n"
             f"📦 Indexed {len(new_products)} existing products.\n\n"
             f"You'll get notified when something new drops.\n"
-            f"Send /latest to see 4 most recent products."
+            f"Commands: /day /week /items /status"
         )
     elif new_products:
         print(f"{len(new_products)} new products found!")
@@ -303,6 +343,9 @@ def check_new_products():
 def checker_loop():
     while True:
         try:
+            print("--- Checking counts ---")
+            check_collection_counts()
+            print("--- Checking products ---")
             check_new_products()
         except Exception as e:
             print(f"Checker error: {e}")
@@ -345,11 +388,23 @@ def handle_command(text, chat_id):
                 send_product(p, chat_id)
                 time.sleep(0.5)
 
+    elif cmd == "/items":
+        msg = "📦 <b>Collection counts:</b>\n\n"
+        for collection in COLLECTIONS:
+            label = collection_label(collection)
+            count = collection_counts.get(collection)
+            if count is not None:
+                msg += f"• {label}: <b>{count}</b>\n"
+            else:
+                msg += f"• {label}: checking...\n"
+        send_telegram_message(msg, chat_id)
+
     elif cmd == "/start":
         send_telegram_message(
             "👋 I monitor new products on CIRCUS by MANIAC.\n\n"
             "/day — products added today\n"
             "/week — products added this week\n"
+            "/items — product count per collection\n"
             "/status — bot info\n\n"
             "New drops are sent automatically.",
             chat_id
