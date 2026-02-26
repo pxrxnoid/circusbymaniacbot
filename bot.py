@@ -45,6 +45,11 @@ def fetch_products_json(collection, page=1):
             image = p["images"][0].get("src", "") if p.get("images") else ""
             price = p["variants"][0].get("price", "") if p.get("variants") else ""
             created = p.get("created_at", "")
+            # Check if all variants are sold out
+            sold_out = all(
+                not v.get("available", False)
+                for v in p.get("variants", [])
+            ) if p.get("variants") else False
             products.append({
                 "handle": handle,
                 "title": title,
@@ -53,6 +58,7 @@ def fetch_products_json(collection, page=1):
                 "url": f"{BASE_URL}/collections/{collection}/products/{handle}",
                 "collection": collection,
                 "created_at": created,
+                "sold_out": sold_out,
             })
         return products
     except Exception:
@@ -103,6 +109,10 @@ def get_latest_products(days=7):
                         found_old = True
                         continue
                     seen_handles.add(handle)
+                    sold_out = all(
+                        not v.get("available", False)
+                        for v in p.get("variants", [])
+                    ) if p.get("variants") else False
                     all_products.append({
                         "handle": handle,
                         "title": p.get("title", ""),
@@ -111,6 +121,7 @@ def get_latest_products(days=7):
                         "url": f"{BASE_URL}/collections/{collection}/products/{handle}",
                         "collection": collection,
                         "created_at": created_str,
+                        "sold_out": sold_out,
                     })
                 if found_old or len(products) < 50:
                     break
@@ -199,11 +210,49 @@ def format_time_ago(created_str):
         return ""
 
 
+_usd_rate_cache = {"rate": 150, "timestamp": 0}
+
+def get_jpy_usd_rate():
+    """Fetch live JPY/USD rate, cache for 1 hour."""
+    now = time.time()
+    if now - _usd_rate_cache["timestamp"] < 3600:
+        return _usd_rate_cache["rate"]
+    try:
+        data = json.loads(fetch_url("https://open.er-api.com/v6/latest/JPY"))
+        rate = data["rates"]["USD"]
+        _usd_rate_cache["rate"] = rate
+        _usd_rate_cache["timestamp"] = now
+        print(f"Updated JPY/USD rate: {rate}")
+        return rate
+    except Exception as e:
+        print(f"Rate fetch failed: {e}")
+        return _usd_rate_cache["rate"]
+
+
+def yen_to_usd(price_str):
+    try:
+        yen = float(price_str.replace(",", ""))
+        rate = get_jpy_usd_rate()
+        usd = yen * rate
+        return f"${usd:.0f}"
+    except Exception:
+        return ""
+
+
 def send_product(p, chat_id=None):
     label = collection_label(p["collection"])
-    caption = f"🆕 <b>{p['title']}</b>\n"
+    sold_out = p.get("sold_out", False)
+    if sold_out:
+        caption = f"🔴🔴🔴 SOLD OUT 🔴🔴🔴\n"
+        caption += f"<b>{p['title']}</b>\n"
+    else:
+        caption = f"🆕 <b>{p['title']}</b>\n"
     if p["price"]:
-        caption += f"💴 ¥{p['price']}\n"
+        usd = yen_to_usd(p["price"])
+        caption += f"💴 ¥{p['price']}"
+        if usd:
+            caption += f" ({usd})"
+        caption += "\n"
     caption += f"📁 {label}\n"
     time_info = format_time_ago(p.get("created_at", ""))
     if time_info:
