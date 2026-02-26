@@ -72,28 +72,54 @@ def fetch_all_products(collection):
     return all_products
 
 
-def get_latest_products(count=4):
+def get_latest_products(days=7):
+    from datetime import datetime, timedelta, timezone
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     all_products = []
+    seen_handles = set()
+
     for collection in COLLECTIONS:
-        url = f"{BASE_URL}/collections/{collection}/products.json?limit=4&sort_by=created-descending"
-        try:
-            data = json.loads(fetch_url(url))
-            for p in data.get("products", []):
-                handle = p.get("handle", "")
-                all_products.append({
-                    "handle": handle,
-                    "title": p.get("title", ""),
-                    "image": p["images"][0].get("src", "") if p.get("images") else "",
-                    "price": p["variants"][0].get("price", "") if p.get("variants") else "",
-                    "url": f"{BASE_URL}/collections/{collection}/products/{handle}",
-                    "collection": collection,
-                    "created_at": p.get("created_at", ""),
-                })
-        except Exception as e:
-            print(f"Error fetching latest from {collection}: {e}")
-        time.sleep(0.3)
+        page = 1
+        while True:
+            url = f"{BASE_URL}/collections/{collection}/products.json?limit=50&page={page}"
+            try:
+                data = json.loads(fetch_url(url))
+                products = data.get("products", [])
+                if not products:
+                    break
+                found_old = False
+                for p in products:
+                    handle = p.get("handle", "")
+                    if handle in seen_handles:
+                        continue
+                    created_str = p.get("created_at", "")
+                    if not created_str:
+                        continue
+                    # Parse ISO timestamp
+                    created = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+                    if created < cutoff:
+                        found_old = True
+                        continue
+                    seen_handles.add(handle)
+                    all_products.append({
+                        "handle": handle,
+                        "title": p.get("title", ""),
+                        "image": p["images"][0].get("src", "") if p.get("images") else "",
+                        "price": p["variants"][0].get("price", "") if p.get("variants") else "",
+                        "url": f"{BASE_URL}/collections/{collection}/products/{handle}",
+                        "collection": collection,
+                        "created_at": created_str,
+                    })
+                if found_old or len(products) < 50:
+                    break
+                page += 1
+            except Exception as e:
+                print(f"Error fetching latest from {collection}: {e}")
+                break
+            time.sleep(0.3)
+
     all_products.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-    return all_products[:count]
+    return all_products
 
 
 def collection_label(slug):
@@ -210,14 +236,15 @@ def handle_command(text, chat_id):
     cmd = text.strip().lower().split("@")[0]
 
     if cmd == "/latest":
-        send_telegram_message("🔍 Fetching latest products...", chat_id)
-        products = get_latest_products(4)
+        send_telegram_message("🔍 Fetching products added in the last 7 days...", chat_id)
+        products = get_latest_products(7)
         if not products:
-            send_telegram_message("❌ Could not fetch products right now.", chat_id)
+            send_telegram_message("No new products in the last 7 days.", chat_id)
         else:
+            send_telegram_message(f"Found {len(products)} products from the last 7 days:", chat_id)
             for p in products:
                 send_product(p, chat_id)
-                time.sleep(0.3)
+                time.sleep(0.5)
 
     elif cmd == "/start":
         send_telegram_message(
