@@ -165,12 +165,49 @@ def send_telegram_message(text, chat_id=None):
         return json.loads(resp.read().decode())
 
 
+def format_time_ago(created_str):
+    from datetime import datetime, timezone, timedelta
+    if not created_str:
+        return ""
+    try:
+        created = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        diff = now - created
+        days = diff.days
+        hours = diff.seconds // 3600
+        minutes = (diff.seconds % 3600) // 60
+        parts = []
+        if days > 0:
+            parts.append(f"{days}d")
+        if hours > 0:
+            parts.append(f"{hours}h")
+        if minutes > 0:
+            parts.append(f"{minutes}m")
+        ago = " ".join(parts) + " ago" if parts else "just now"
+        # Ukraine time: EET (UTC+2) / EEST (UTC+3)
+        # DST runs last Sunday of March to last Sunday of October
+        ua_offset = timedelta(hours=2)
+        created_ua = created.astimezone(timezone(ua_offset))
+        month = created_ua.month
+        # Simple DST check: April-September always +3, Nov-Feb always +2, March/October need exact check
+        if 4 <= month <= 9:
+            ua_offset = timedelta(hours=3)
+            created_ua = created.astimezone(timezone(ua_offset))
+        date_str = created_ua.strftime("%b %d, %Y at %H:%M")
+        return f"🕐 {ago} ({date_str})"
+    except Exception:
+        return ""
+
+
 def send_product(p, chat_id=None):
     label = collection_label(p["collection"])
     caption = f"🆕 <b>{p['title']}</b>\n"
     if p["price"]:
         caption += f"💴 ¥{p['price']}\n"
     caption += f"📁 {label}\n"
+    time_info = format_time_ago(p.get("created_at", ""))
+    if time_info:
+        caption += f"{time_info}\n"
     caption += f"\n🔗 <a href=\"{p['url']}\">View product</a>"
     if p["image"]:
         send_telegram_photo(p["image"], caption, chat_id)
