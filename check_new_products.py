@@ -1,7 +1,7 @@
 import json
 import os
 import re
-import sys
+import time
 import urllib.request
 import urllib.parse
 
@@ -32,13 +32,16 @@ def save_seen(seen):
         json.dump(sorted(seen), f, indent=2)
 
 
-def fetch_products_json(collection):
-    """Try Shopify JSON API first."""
-    url = f"{BASE_URL}/collections/{collection}/products.json?limit=30"
+def fetch_url(url):
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return resp.read().decode()
+
+
+def fetch_products_json(collection, page=1):
+    url = f"{BASE_URL}/collections/{collection}/products.json?limit=250&page={page}"
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode())
+        data = json.loads(fetch_url(url))
         products = []
         for p in data.get("products", []):
             handle = p.get("handle", "")
@@ -62,15 +65,28 @@ def fetch_products_json(collection):
         return None
 
 
-def fetch_products_html(collection):
-    """Fallback: scrape HTML."""
-    url = f"{BASE_URL}/collections/{collection}"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        html = resp.read().decode()
+def fetch_all_products_json(collection):
+    all_products = []
+    page = 1
+    while True:
+        products = fetch_products_json(collection, page)
+        if products is None:
+            if page == 1:
+                return None
+            break
+        if not products:
+            break
+        all_products.extend(products)
+        if len(products) < 250:
+            break
+        page += 1
+        time.sleep(0.5)
+    return all_products
 
+
+def fetch_products_html(collection):
+    html = fetch_url(f"{BASE_URL}/collections/{collection}")
     products = []
-    # Find product links and images
     pattern = r'<a[^>]*href="(/collections/' + re.escape(collection) + r'/products/([^"]+))"'
     seen_handles = set()
     for match in re.finditer(pattern, html):
@@ -78,28 +94,17 @@ def fetch_products_html(collection):
         if handle in seen_handles:
             continue
         seen_handles.add(handle)
-
-        # Find image near this product link
-        # Look for the img src after this match
         start = match.end()
         img_match = re.search(r'<img[^>]*src="(//circusbymaniac\.shop/cdn/shop/files/[^"]+)"', html[start:start+1000])
         image = ""
         if img_match:
             image = "https:" + img_match.group(1)
-            # Get higher res image
             image = re.sub(r'_\d+x\d+(@2x)?\.', '_600x600.', image)
-
-        # Find price near this product
         price_match = re.search(r'¥([\d,]+)', html[start:start+1000])
         price = price_match.group(0) if price_match else ""
-
-        # Find title
-        title_match = re.search(r'>([^<]*' + re.escape(handle).replace(r'\-', '.*?') + r'[^<]*)<', html[start:start+1000])
-        # Simpler: just use the text content after the link
         title_block = html[start:start+500]
         title_search = re.search(r'>\s*([A-Z][^<]{3,}[^<]*)\s*<', title_block)
         title = title_search.group(1).strip() if title_search else handle
-
         products.append({
             "handle": handle,
             "title": title,
@@ -108,21 +113,21 @@ def fetch_products_html(collection):
             "url": f"{BASE_URL}{path}",
             "collection": collection,
         })
-
     return products
 
 
 def fetch_products(collection):
-    products = fetch_products_json(collection)
+    products = fetch_all_products_json(collection)
     if products is not None:
         return products
     return fetch_products_html(collection)
 
 
-def send_telegram_photo(image_url, caption):
+def send_telegram_photo(image_url, caption, chat_id=None):
+    chat_id = chat_id or TELEGRAM_CHAT_ID
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
     data = urllib.parse.urlencode({
-        "chat_id": TELEGRAM_CHAT_ID,
+        "chat_id": chat_id,
         "photo": image_url,
         "caption": caption,
         "parse_mode": "HTML",
@@ -133,13 +138,14 @@ def send_telegram_photo(image_url, caption):
             return json.loads(resp.read().decode())
     except Exception as e:
         print(f"Failed to send photo, trying text: {e}")
-        return send_telegram_message(caption)
+        return send_telegram_message(caption, chat_id)
 
 
-def send_telegram_message(text):
+def send_telegram_message(text, chat_id=None):
+    chat_id = chat_id or TELEGRAM_CHAT_ID
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = urllib.parse.urlencode({
-        "chat_id": TELEGRAM_CHAT_ID,
+        "chat_id": chat_id,
         "text": text,
         "parse_mode": "HTML",
         "disable_web_page_preview": False,
@@ -186,15 +192,15 @@ def main():
             label = collection_label(p["collection"])
             caption = f"🆕 <b>{p['title']}</b>\n"
             if p["price"]:
-                caption += f"💴 {p['price']}\n"
+                caption += f"💴 ¥{p['price']}\n"
             caption += f"📁 {label}\n"
             caption += f"\n🔗 <a href=\"{p['url']}\">View product</a>"
-
             print(f"  Sending: {p['title']}")
             if p["image"]:
                 send_telegram_photo(p["image"], caption)
             else:
                 send_telegram_message(caption)
+            time.sleep(0.3)
     else:
         print("No new products.")
 
