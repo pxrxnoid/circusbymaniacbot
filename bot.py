@@ -10,6 +10,8 @@ TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 PORT = int(os.environ.get("PORT", 10000))
 
+RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
+
 BASE_URL = "https://circusbymaniac.shop"
 
 COLLECTIONS = [
@@ -235,11 +237,22 @@ def get_updates(offset=0):
 def handle_command(text, chat_id):
     cmd = text.strip().lower().split("@")[0]
 
-    if cmd == "/latest":
-        send_telegram_message("🔍 Fetching products added in the last 7 days...", chat_id)
+    if cmd == "/day":
+        send_telegram_message("🔍 Fetching products added today...", chat_id)
+        products = get_latest_products(1)
+        if not products:
+            send_telegram_message("No new products today.", chat_id)
+        else:
+            send_telegram_message(f"Found {len(products)} products from today:", chat_id)
+            for p in products:
+                send_product(p, chat_id)
+                time.sleep(0.5)
+
+    elif cmd == "/week":
+        send_telegram_message("🔍 Fetching products added this week...", chat_id)
         products = get_latest_products(7)
         if not products:
-            send_telegram_message("No new products in the last 7 days.", chat_id)
+            send_telegram_message("No new products this week.", chat_id)
         else:
             send_telegram_message(f"Found {len(products)} products from the last 7 days:", chat_id)
             for p in products:
@@ -248,9 +261,11 @@ def handle_command(text, chat_id):
 
     elif cmd == "/start":
         send_telegram_message(
-            "👋 Hey! I monitor new products on CIRCUS by MANIAC.\n\n"
-            "Commands:\n/latest — show 4 most recent products\n\n"
-            "I'll also notify you automatically when new items drop.",
+            "👋 I monitor new products on CIRCUS by MANIAC.\n\n"
+            "/day — products added today\n"
+            "/week — products added this week\n"
+            "/status — bot info\n\n"
+            "New drops are sent automatically.",
             chat_id
         )
 
@@ -297,6 +312,19 @@ def start_health_server():
     server.serve_forever()
 
 
+# ─── Self-ping to keep Render awake ───
+
+def self_ping_loop():
+    while True:
+        time.sleep(300)  # every 5 min
+        if RENDER_URL:
+            try:
+                urllib.request.urlopen(RENDER_URL, timeout=10)
+                print("Self-ping OK")
+            except Exception:
+                pass
+
+
 # ─── Main ───
 
 if __name__ == "__main__":
@@ -305,6 +333,10 @@ if __name__ == "__main__":
     # Health check server (Render needs an open port)
     threading.Thread(target=start_health_server, daemon=True).start()
     print(f"Health server on port {PORT}")
+
+    # Self-ping to prevent Render sleep
+    threading.Thread(target=self_ping_loop, daemon=True).start()
+    print("Self-ping started")
 
     # Product checker in background
     threading.Thread(target=checker_loop, daemon=True).start()
