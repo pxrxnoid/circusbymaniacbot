@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import random
 import time
 import threading
 import urllib.request
@@ -25,9 +26,12 @@ CHECK_INTERVAL = 300  # 5 minutes
 
 # In-memory state
 seen_products = set()
+all_products_cache = []  # for /random
 bot_offset = 0
-collection_counts = {}  # slug -> product count
-last_count_alert = {}   # slug -> last alert message sent
+collection_counts = {}
+last_count_alert = {}
+notifications_on = True
+count_notifications_on = True
 
 
 def fetch_url(url):
@@ -296,12 +300,12 @@ def check_collection_counts():
             elif prev is not None and count > prev:
                 diff = count - prev
                 msg = f"📢 <b>{label} +{diff}</b>\n{prev} → {count} items"
-                if last_count_alert.get(collection) != msg:
+                if count_notifications_on and notifications_on and last_count_alert.get(collection) != msg:
                     send_telegram_message(msg)
                     last_count_alert[collection] = msg
                     print(f"  {label}: +{diff} ({prev} → {count})")
                 else:
-                    print(f"  {label}: +{diff} (already notified, skipping)")
+                    print(f"  {label}: +{diff} (skipped — off or already notified)")
             elif prev is not None and count < prev:
                 diff = prev - count
                 print(f"  {label}: -{diff} ({prev} → {count})")
@@ -313,15 +317,17 @@ def check_collection_counts():
 
 
 def check_new_products():
-    global seen_products
+    global seen_products, all_products_cache
     first_run = len(seen_products) == 0
     new_products = []
+    cached = []
 
     for collection in COLLECTIONS:
         print(f"Checking {collection}...")
         try:
             products = fetch_all_products(collection)
             print(f"  Found {len(products)} products")
+            cached.extend(products)
             for p in products:
                 if p["handle"] not in seen_products:
                     new_products.append(p)
@@ -329,19 +335,23 @@ def check_new_products():
         except Exception as e:
             print(f"  Error: {e}")
 
+    all_products_cache = cached
+
     if first_run:
         print(f"First run — indexed {len(new_products)} products silently.")
         send_telegram_message(
             f"✅ Bot started! Monitoring 4 collections.\n"
             f"📦 Indexed {len(new_products)} existing products.\n\n"
             f"You'll get notified when something new drops.\n"
-            f"Commands: /day /week /items /status"
+            f"Commands: /day /week /items /random /status"
         )
-    elif new_products:
+    elif new_products and notifications_on:
         print(f"{len(new_products)} new products found!")
         for p in new_products:
             send_product(p)
             time.sleep(0.5)
+    elif new_products:
+        print(f"{len(new_products)} new products found (notifications off, skipping)")
     else:
         print("No new products.")
 
@@ -370,6 +380,7 @@ def get_updates(offset=0):
 
 
 def handle_command(text, chat_id):
+    global notifications_on, count_notifications_on
     cmd = text.strip().lower().split("@")[0]
 
     if cmd == "/day":
@@ -405,21 +416,51 @@ def handle_command(text, chat_id):
                 msg += f"• {label}: checking...\n"
         send_telegram_message(msg, chat_id)
 
+    elif cmd == "/random":
+        if not all_products_cache:
+            send_telegram_message("⏳ Still loading products, try again in a minute.", chat_id)
+        else:
+            p = random.choice(all_products_cache)
+            send_product(p, chat_id)
+
+    elif cmd == "/on":
+        notifications_on = True
+        send_telegram_message("✅ All notifications ON", chat_id)
+
+    elif cmd == "/off":
+        notifications_on = False
+        send_telegram_message("🔕 All notifications OFF", chat_id)
+
+    elif cmd == "/counton":
+        count_notifications_on = True
+        send_telegram_message("✅ Count notifications ON", chat_id)
+
+    elif cmd == "/countoff":
+        count_notifications_on = False
+        send_telegram_message("🔕 Count notifications OFF", chat_id)
+
     elif cmd == "/start":
         send_telegram_message(
             "👋 I monitor new products on CIRCUS by MANIAC.\n\n"
             "/day — products added today\n"
             "/week — products added this week\n"
             "/items — product count per collection\n"
+            "/random — random product\n"
+            "/on /off — all notifications\n"
+            "/counton /countoff — count notifications\n"
             "/status — bot info\n\n"
             "New drops are sent automatically.",
             chat_id
         )
 
     elif cmd == "/status":
+        notif_status = "ON ✅" if notifications_on else "OFF 🔕"
+        count_status = "ON ✅" if count_notifications_on else "OFF 🔕"
         send_telegram_message(
             f"📊 Tracking {len(seen_products)} products across 4 collections.\n"
-            f"Checking every {CHECK_INTERVAL // 60} minutes.",
+            f"Checking every {CHECK_INTERVAL // 60} minutes.\n\n"
+            f"Notifications: {notif_status}\n"
+            f"Count alerts: {count_status}",
             chat_id
         )
 
