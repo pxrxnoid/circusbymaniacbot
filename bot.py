@@ -27,6 +27,7 @@ CHECK_INTERVAL = 300  # 5 minutes
 seen_products = set()
 bot_offset = 0
 collection_counts = {}  # slug -> product count
+last_count_alert = {}   # slug -> last alert message sent
 
 
 def fetch_url(url):
@@ -294,8 +295,13 @@ def check_collection_counts():
                 print(f"  {label}: {count} items (initial)")
             elif prev is not None and count > prev:
                 diff = count - prev
-                send_telegram_message(f"📢 <b>{label} +{diff}</b>\n{prev} → {count} items")
-                print(f"  {label}: +{diff} ({prev} → {count})")
+                msg = f"📢 <b>{label} +{diff}</b>\n{prev} → {count} items"
+                if last_count_alert.get(collection) != msg:
+                    send_telegram_message(msg)
+                    last_count_alert[collection] = msg
+                    print(f"  {label}: +{diff} ({prev} → {count})")
+                else:
+                    print(f"  {label}: +{diff} (already notified, skipping)")
             elif prev is not None and count < prev:
                 diff = prev - count
                 print(f"  {label}: -{diff} ({prev} → {count})")
